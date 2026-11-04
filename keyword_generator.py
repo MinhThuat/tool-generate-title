@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import urllib.parse
 
 import requests
@@ -66,10 +67,33 @@ def configure_credentials(io):
         pass
 
 
+def _norm(s):
+    """Case/whitespace/Unicode-form insensitive (Vietnamese accents come as NFC or NFD)."""
+    return " ".join(unicodedata.normalize("NFC", s).casefold().split())
+
+
 def parse_board_id(raw):
     """Accept a full board URL or a raw board ID; return the board ID."""
-    match = re.search(r'trello\.com/b/([^/?#]+)', raw)
-    return match.group(1) if match else raw
+    raw = raw.strip().strip('"\'')
+    match = re.search(r'trello\.com/b/([^/?#\s]+)', raw)
+    if match:
+        return match.group(1)
+    match = re.search(r'trello\.com/c/([^/?#\s]+)', raw)
+    if match:  # card link pasted: use that card's board
+        r = requests.get(f"https://api.trello.com/1/cards/{match.group(1)}",
+                         params={'key': TRELLO_API_KEY, 'token': TRELLO_TOKEN, 'fields': 'idBoard'},
+                         timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            return r.json()['idBoard']
+    if not re.fullmatch(r'[A-Za-z0-9]{8}|[0-9a-f]{24}', raw):  # not an ID: treat as board name
+        r = requests.get("https://api.trello.com/1/members/me/boards",
+                         params={'key': TRELLO_API_KEY, 'token': TRELLO_TOKEN, 'fields': 'name'},
+                         timeout=REQUEST_TIMEOUT)
+        if r.status_code == 200:
+            for b in r.json():
+                if _norm(b['name']) == _norm(raw):
+                    return b['id']
+    return raw
 
 
 def get_lists(board_id, io):
@@ -79,8 +103,10 @@ def get_lists(board_id, io):
     response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     if response.status_code == 200:
         return response.json()
-    io.log(f"Error: Failed to fetch lists from board '{board_id}'. Status {response.status_code}")
-    if response.status_code == 401:
+    io.log(f"Error: Failed to fetch lists from board '{board_id}'. Status {response.status_code}: {response.text[:200]}")
+    if response.status_code == 400:
+        io.log("  -> Board ID sai. Dán link board dạng https://trello.com/b/<ID>/..., link card, hoặc đúng tên board.")
+    elif response.status_code == 401:
         io.log(f"  -> Trello rejected key/token. Delete '{CONFIG_PATH}' and re-run to re-enter.")
     return None
 
