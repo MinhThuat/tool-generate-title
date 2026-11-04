@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Web UI (Linux build): controls, log and downloaded images + results.
+No embedded Claude terminal — Python drives the Trello pipeline on its own.
+
+  python web_studio.py            # opens http://127.0.0.1:8770
+"""
+import argparse
+import asyncio
+import json
+import os
+import threading
+import urllib.parse
+import webbrowser
+
+from aiohttp import web
+
+import keyword_generator as kg
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+HTML = os.path.join(ROOT, "studio.html")
+
+
+# ---------------- pipeline <-> browser bridge ----------------
+class WebIO:
+    """io the pipeline (running in a worker thread) talks through. Emits events
+    to the browser over the /events WebSocket; ask() returns pre-filled answers
+    collected from the run form (order: mode, optional prompt, board, list-index)."""
+
+    def __init__(self, app, loop, answers):
+        self.app = app
+        self.loop = loop
+        self.answers = list(answers)
+
+    def _emit(self, evt):
+        asyncio.run_coroutine_threadsafe(broadcast(self.app, evt), self.loop)
+
+    def ask(self, prompt, secret=False):
+        self._emit({"t": "log", "msg": prompt})
+        return self.answers.pop(0) if self.answers else ""
+
+    def log(self, msg):
+        self._emit({"t": "log", "msg": msg})
+
+    def image(self, card_id, path):
+        self.app["media"].add(os.path.realpath(path))
+        self._emit({"t": "image", "card": card_id,
+                    "url": "/media?p=" + urllib.parse.quote(path)})
+
+    def result(self, card_id, sku, title, tags, ok):
+        self._emit({"t": "result", "card": card_id, "sku": sku,
+                    "title": title, "tags": tags, "ok": ok})
+
+
+async def broadcast(app, evt):
+    dead = []
+    for ws in app["clients"]:
+        try:
+            await ws.send_json(evt)
+        except ConnectionResetError:
+            dead.append(ws)
+    for ws in dead:
+        app["clients"].discard(ws)
+
+
+# ---------------- HTTP endpoints ----------------
+async def index(request):
+    return web.FileResponse(HTML)
+
+
+async def events(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    request.app["clients"].add(ws)
+    try:
+        async for _ in ws:  # client only listens
+            pass
+    finally:
+        request.app["clients"].discard(ws)
+    return ws
+
+
+async def media(request):
+    p = os.path.realpath(urllib.parse.unquote(request.query.get("p", "")))
+    if p not in request.app["media"] or not os.path.isfile(p):
+        return web.Response(status=404, text="not found")
+    return web.FileResponse(p, headers={"Content-Type": "image/jpeg"})
+
+
+async def status(request):
+    """Claude connectivity (haiku ping) + whether Trello creds are saved."""
+    msgs = []
+    ok = await asyncio.get_event_loop().run_in_executor(
+        None, kg.check_claude_connection, _CollectIO(msgs))
+    creds = bool((kg.TRELLO_API_KEY and kg.TRELLO_TOKEN) or os.path.exists(kg.CONFIG_PATH))
+    return web.json_response({"claude_ok": ok, "claude_log": msgs, "creds_saved": creds})
+
+
+async def save_creds(request):
+    d = await request.json()
+    kg.TRELLO_API_KEY = (d.get("key") or "").strip()
+    kg.TRELLO_TOKEN = (d.get("token") or "").strip()
+    try:
+        with open(kg.CONFIG_PATH, "w") as f:
+            json.dump({"TRELLO_API_KEY": kg.TRELLO_API_KEY,
+                       "TRELLO_TOKEN": kg.TRELLO_TOKEN}, f)
+        os.chmod(kg.CONFIG_PATH, 0o600)
+    except OSError:
+        pass
+    return web.json_response({"saved": bool(kg.TRELLO_API_KEY and kg.TRELLO_TOKEN)})
+
+
+def _load_saved_creds():
+    if kg.TRELLO_API_KEY and kg.TRELLO_TOKEN:
+        return
+    try:
+        with open(kg.CONFIG_PATH) as f:
+            cfg = json.load(f)
+        kg.TRELLO_API_KEY = kg.TRELLO_API_KEY or cfg.get("TRELLO_API_KEY", "").strip()
+        kg.TRELLO_TOKEN = kg.TRELLO_TOKEN or cfg.get("TRELLO_TOKEN", "").strip()
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
+async def lists(request):
+    _load_saved_creds()
+    if not (kg.TRELLO_API_KEY and kg.TRELLO_TOKEN):
+        return web.json_response({"err": "Chưa có Trello key/token."}, status=400)
+    board = kg.parse_board_id(request.query.get("board", "").strip())
+    msgs = []
+    data = await asyncio.get_event_loop().run_in_executor(
+        None, kg.get_lists, board, _CollectIO(msgs))
+    if not data:
+        return web.json_response({"err": " ".join(msgs) or "Không lấy được lists."}, status=400)
+    return web.json_response({"lists": [{"name": l["name"]} for l in data]})
+
+
+async def run(request):
+    if request.app["state"]["running"]:
+        return web.json_response({"err": "Đang chạy rồi."}, status=409)
+    d = await request.json()
+    _load_saved_creds()
+    if not (kg.TRELLO_API_KEY and kg.TRELLO_TOKEN):
+        return web.json_response({"err": "Chưa có Trello key/token."}, status=400)
+    # run_pipeline asks in this order: mode, optional prompt, board, list(number).
+    answers = [d.get("mode", "1"), d.get("prompt", ""),
+               d.get("board", ""), str(d.get("list_index", ""))]
+    loop = asyncio.get_event_loop()
+    io = WebIO(request.app, loop, answers)
+    request.app["state"]["running"] = True
+
+    def worker():
+        try:
+            kg.run_pipeline(io)
+        except Exception as e:
+            io.log(f"Fatal: {e}")
+        finally:
+            io._emit({"t": "done"})
+            request.app["state"]["running"] = False
+
+    threading.Thread(target=worker, daemon=True).start()
+    return web.json_response({"started": True})
+
+
+class _CollectIO:
+    """Minimal io that just collects log lines (for status/lists helpers)."""
+    def __init__(self, sink):
+        self.sink = sink
+
+    def ask(self, prompt, secret=False):
+        return ""
+
+    def log(self, msg):
+        self.sink.append(msg)
+
+    def image(self, *a):
+        pass
+
+    def result(self, *a):
+        pass
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=8770)
+    ap.add_argument("--no-browser", action="store_true")
+    a = ap.parse_args()
+
+    app = web.Application(client_max_size=64 * 1024 * 1024)
+    app["clients"] = set()
+    app["media"] = set()
+    app["state"] = {"running": False}
+    app.add_routes([
+        web.get("/", index),
+        web.get("/events", events),
+        web.get("/media", media),
+        web.get("/status", status),
+        web.post("/creds", save_creds),
+        web.get("/lists", lists),
+        web.post("/run", run),
+    ])
+    url = f"http://127.0.0.1:{a.port}"
+    print(f"Studio: {url}")
+    if not a.no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    web.run_app(app, host="127.0.0.1", port=a.port, print=None)
+
+
+if __name__ == "__main__":
+    main()

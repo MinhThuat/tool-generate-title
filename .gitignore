@@ -1,0 +1,8 @@
+.venv/
+.python/
+__pycache__/
+config.json
+output.json
+.env
+update_token.txt
+.version

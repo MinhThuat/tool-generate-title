@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trello → Claude: Etsy title + tags</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#e6e9ef; --mut:#8b93a3; --accent:#6ea8fe; --ok:#4caf7d; --bad:#e0665f; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:14px/1.4 system-ui,Segoe UI,Roboto,sans-serif; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100vh; }
+  #top { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+  #bar { display:flex; align-items:center; gap:12px; padding:8px 12px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  #bar h1 { font-size:14px; margin:0; font-weight:600; }
+  #bar .sp { flex:1; }
+  #cstat { font-size:12px; padding:3px 10px; border-radius:12px; background:#20262f;
+    border:1px solid var(--line); color:var(--mut); white-space:nowrap; }
+  #cstat.ok { color:var(--ok); border-color:var(--ok); }
+  #cstat.bad { color:var(--bad); border-color:var(--bad); }
+  #controls { padding:10px 12px; border-bottom:1px solid var(--line); background:#12151c;
+    display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
+  #controls label { color:var(--mut); font-size:12px; }
+  #prompt { flex:1 1 320px; min-width:220px; resize:vertical; min-height:34px; }
+  input, textarea, select { background:#0d0f13; color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:6px 8px; font:13px system-ui; }
+  #board { width:260px; }
+  input[type=password] { width:150px; }
+  button { background:#222835; color:var(--fg); border:1px solid var(--line);
+    border-radius:7px; padding:6px 12px; cursor:pointer; font-size:13px; }
+  button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  #run { background:#1b3a2a; border-color:var(--ok); color:#bff0d4; }
+  .creds.hide { display:none; }
+  #log { height:160px; overflow-y:auto; padding:6px 12px; font:12px/1.5 ui-monospace,Consolas,monospace;
+    color:var(--mut); background:#0c0e12; border-bottom:1px solid var(--line); white-space:pre-wrap; }
+  #gallery { flex:1; overflow-y:auto; padding:14px; display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); align-content:start; }
+  .card { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--panel); }
+  .card img { width:100%; display:block; background:#000; }
+  .card .body { padding:8px 10px; font-size:12px; }
+  .card .title { color:var(--fg); font-weight:600; margin-bottom:6px; word-break:break-word; }
+  .card .tags { color:var(--mut); word-break:break-word; }
+  .card.bad .title { color:var(--bad); }
+  #empty { color:var(--mut); grid-column:1/-1; text-align:center; padding:50px 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div id="bar">
+      <h1>🏷️ Trello → Claude</h1>
+      <div class="sp"></div>
+      <span id="cstat">Claude: đang kiểm tra…</span>
+    </div>
+    <div id="controls">
+      <span class="creds">
+        <label>Trello key <input id="key" type="password" placeholder="API key"></label>
+        <label>token <input id="token" type="password" placeholder="token"></label>
+        <button id="saveCreds">Lưu</button>
+      </span>
+      <label>Ảnh
+        <select id="mode"><option value="1">Chỉ cover</option><option value="2">Toàn bộ (ghép)</option></select>
+      </label>
+      <label>Prompt <textarea id="prompt" rows="1" placeholder="Tùy chọn: yêu cầu thêm (để trống = mặc định theo ảnh)"></textarea></label>
+      <label>Board <input id="board" placeholder="ID hoặc link Trello"></label>
+      <button id="loadLists">Nạp lists</button>
+      <select id="list"><option value="">— chọn list —</option></select>
+      <button id="run" disabled>▶ Chạy</button>
+    </div>
+    <div id="log"></div>
+    <div id="gallery"><div id="empty">Kết quả từng card sẽ hiện ở đây khi chạy.</div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function log(msg){ const el=$('log'); el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; }
+
+// ---------- pipeline events ----------
+const cards = {};
+function cardEl(id){
+  if (cards[id]) return cards[id];
+  $('empty').style.display='none';
+  const d = document.createElement('div'); d.className='card';
+  d.innerHTML = '<img><div class="body"><div class="title">…</div><div class="tags"></div></div>';
+  $('gallery').insertBefore(d, $('gallery').firstChild);
+  return cards[id] = d;
+}
+const ev = new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/events');
+ev.onmessage = e => {
+  const m = JSON.parse(e.data);
+  if (m.t==='log') log(m.msg);
+  else if (m.t==='image') cardEl(m.card).querySelector('img').src = m.url;
+  else if (m.t==='result'){ const c=cardEl(m.card);
+    c.classList.toggle('bad', !m.ok);
+    c.querySelector('.title').textContent = m.ok ? ((m.sku?m.sku+' ':'')+m.title) : ((m.sku||'')+' — bỏ qua');
+    c.querySelector('.tags').textContent = m.ok ? (m.tags||[]).join(', ') : ''; }
+  else if (m.t==='done'){ $('run').disabled=false; log('— Xong —'); }
+};
+
+// ---------- status ----------
+async function refreshStatus(){
+  try {
+    const s = await (await fetch('/status')).json();
+    const el = $('cstat');
+    el.className = s.claude_ok ? 'ok' : 'bad';
+    el.textContent = s.claude_ok ? 'Claude: kết nối thành công ✓' : 'Claude: kết nối thất bại ✗';
+    (s.claude_log||[]).forEach(log);
+    document.querySelectorAll('.creds').forEach(x => x.classList.toggle('hide', s.creds_saved));
+    $('run').disabled = !s.claude_ok;
+  } catch(e){ $('cstat').textContent='Claude: (không kiểm tra được)'; }
+}
+refreshStatus();
+
+$('saveCreds').onclick = async () => {
+  const r = await (await fetch('/creds',{method:'POST',body:JSON.stringify({key:$('key').value,token:$('token').value})})).json();
+  if (r.saved){ document.querySelectorAll('.creds').forEach(x=>x.classList.add('hide')); log('Đã lưu Trello creds.'); }
+  else log('Creds chưa đủ.');
+};
+
+$('loadLists').onclick = async () => {
+  const sel = $('list'); sel.innerHTML = '<option value="">— đang nạp… —</option>';
+  const r = await (await fetch('/lists?board='+encodeURIComponent($('board').value))).json();
+  if (r.err){ log('Lỗi: '+r.err); sel.innerHTML='<option value="">— chọn list —</option>'; return; }
+  sel.innerHTML = '<option value="">— chọn list —</option>';
+  r.lists.forEach((l,i) => { const o=document.createElement('option'); o.value=i+1; o.textContent=l.name; sel.appendChild(o); });
+  log('Đã nạp '+r.lists.length+' list.');
+};
+
+$('run').onclick = async () => {
+  if (!$('list').value){ log('Chọn list trước.'); return; }
+  $('run').disabled = true;
+  const body = { mode:$('mode').value, prompt:$('prompt').value, board:$('board').value, list_index:$('list').value };
+  const r = await (await fetch('/run',{method:'POST',body:JSON.stringify(body)})).json();
+  if (r.err){ log('Lỗi: '+r.err); $('run').disabled=false; }
+};
+</script>
+</body>
+</html>
