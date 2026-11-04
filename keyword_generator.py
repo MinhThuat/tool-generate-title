@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 
 import requests
 from PIL import Image
@@ -88,6 +89,9 @@ def select_list(lists, io):
     """Pick a list by exact name or by number from a shown menu."""
     menu = "\n".join(f"  {i}. {l['name']}" for i, l in enumerate(lists, 1))
     choice = io.ask(f"Lists in board:\n{menu}\nEnter list number or exact name:").strip()
+    for trello_list in lists:  # the web UI sends the list id
+        if trello_list['id'] == choice:
+            return choice
     if choice.isdigit():
         idx = int(choice) - 1
         if 0 <= idx < len(lists):
@@ -114,7 +118,7 @@ def get_cards_in_list(list_id, io):
 
 def image_attachments(card):
     """All image attachment URLs on a card, cover first if it is an image."""
-    atts = [a for a in card.get('attachments', []) if a.get('mimeType', '').startswith('image/')]
+    atts = [a for a in card.get('attachments', []) if (a.get('mimeType') or '').startswith('image/')]
     cover_id = (card.get('cover') or {}).get('idAttachment')
     atts.sort(key=lambda a: a.get('id') != cover_id)  # cover attachment first
     return [a['url'] for a in atts]
@@ -139,10 +143,13 @@ def extract_sku_from_title(card_name, io):
 
 
 def fetch_image_bytes(image_url, io):
-    """Download a Trello attachment (needs the OAuth header) and return raw bytes."""
-    headers = {
-        "Authorization": f'OAuth oauth_consumer_key="{TRELLO_API_KEY}", oauth_token="{TRELLO_TOKEN}"'
-    }
+    """Download a Trello attachment (needs the OAuth header) and return raw bytes.
+    The header carries the user's Trello creds, so only send it to Trello itself."""
+    host = (urllib.parse.urlparse(image_url).hostname or "").lower()
+    headers = {}
+    if host == "trello.com" or host.endswith(".trello.com"):
+        headers["Authorization"] = (
+            f'OAuth oauth_consumer_key="{TRELLO_API_KEY}", oauth_token="{TRELLO_TOKEN}"')
     response = requests.get(image_url, headers=headers, timeout=REQUEST_TIMEOUT)
     if response.status_code != 200:
         io.log(f"Error: download failed (status {response.status_code}): {image_url}")
@@ -336,7 +343,7 @@ def update_card(card_id, sku, new_title, tags_list, io):
     """Update the title (SKU preserved) and description of a Trello card."""
     if not new_title or not tags_list:
         io.log(f"Error: Cannot update card '{card_id}' (missing title/tags).")
-        return
+        return False
     check_output(new_title, tags_list, io)
     final_title = f"{sku} {new_title}".strip()
     url = f"https://api.trello.com/1/cards/{card_id}"
@@ -350,8 +357,9 @@ def update_card(card_id, sku, new_title, tags_list, io):
         if response.status_code == 401:
             io.log("  -> Token is read-only. Make a read,write token, delete "
                    f"'{CONFIG_PATH}', re-run.")
-    else:
-        io.log(f"Updated card '{sku}': DONE")
+        return False
+    io.log(f"Updated card '{sku}': DONE")
+    return True
 
 
 def run_pipeline(io):
@@ -389,19 +397,21 @@ def run_pipeline(io):
         io.log(f"\n[{n}/{len(cards)}] Processing '{card['name']}' ({card['id']})")
         sku = extract_sku_from_title(card['name'], io)
         urls = get_image_urls_from_card(card, mode)
-        title, tags, image_path = None, None, None
-        if not urls:
-            io.log(f"Warning: No usable image for card '{card['id']}'. Skipping.")
-        else:
-            image_path = build_image_file(card['id'], urls, tmpdir, io)
-            if image_path:
-                io.image(card['id'], image_path)  # show it in the UI
-                title, tags = generate_keywords_and_tags(image_path, io, extra)
-                if title and tags:
-                    update_card(card['id'], sku, title, tags, io)
-                else:
-                    io.log(f"Error: Skipping card '{card['id']}' (invalid Claude output).")
-        ok = bool(title and tags)
+        title, tags, image_path, ok = None, None, None, False
+        try:
+            if not urls:
+                io.log(f"Warning: No usable image for card '{card['id']}'. Skipping.")
+            else:
+                image_path = build_image_file(card['id'], urls, tmpdir, io)
+                if image_path:
+                    io.image(card['id'], image_path)  # show it in the UI
+                    title, tags = generate_keywords_and_tags(image_path, io, extra)
+                    if title and tags:
+                        ok = update_card(card['id'], sku, title, tags, io)
+                    else:
+                        io.log(f"Error: Skipping card '{card['id']}' (invalid Claude output).")
+        except requests.RequestException as e:  # one card's network error must not kill the batch
+            io.log(f"Error: network error on card '{card['id']}': {e}")
         io.result(card['id'], sku, title, tags, ok)
         results.append({
             "card_id": card['id'], "sku": sku,

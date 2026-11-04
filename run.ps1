@@ -110,8 +110,11 @@ if (-not $venvOk) {
     & $PY -m venv "$DIR\.venv"
 }
 if (-not (Test-Path "$DIR\.venv\.deps_ok")) {
+    # PS 5.1 doesn't throw on a native nonzero exit: check it, or .deps_ok gets
+    # written after a failed install and deps are never retried.
     & $VPY -m pip install --upgrade pip
     & $VPY -m pip install -r "$DIR\requirements.txt"
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed (check internet), run again." }
     New-Item -ItemType File -Force -Path "$DIR\.venv\.deps_ok" | Out-Null
 }
 

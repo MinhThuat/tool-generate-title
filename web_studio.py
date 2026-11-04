@@ -131,19 +131,20 @@ async def lists(request):
         None, kg.get_lists, board, _CollectIO(msgs))
     if not data:
         return web.json_response({"err": " ".join(msgs) or "Không lấy được lists."}, status=400)
-    return web.json_response({"lists": [{"name": l["name"]} for l in data]})
+    return web.json_response({"lists": [{"id": l["id"], "name": l["name"]} for l in data]})
 
 
 async def run(request):
+    d = await request.json()
+    # No await between check and claim, so two clicks can't both start a run.
     if request.app["state"]["running"]:
         return web.json_response({"err": "Đang chạy rồi."}, status=409)
-    d = await request.json()
     _load_saved_creds()
     if not (kg.TRELLO_API_KEY and kg.TRELLO_TOKEN):
         return web.json_response({"err": "Chưa có Trello key/token."}, status=400)
-    # run_pipeline asks in this order: mode, optional prompt, board, list(number).
+    # run_pipeline asks in this order: mode, optional prompt, board, list (id).
     answers = [d.get("mode", "1"), d.get("prompt", ""),
-               d.get("board", ""), str(d.get("list_index", ""))]
+               d.get("board", ""), str(d.get("list_id", ""))]
     loop = asyncio.get_event_loop()
     io = WebIO(request.app, loop, answers)
     request.app["state"]["running"] = True
@@ -179,13 +180,25 @@ class _CollectIO:
         pass
 
 
+@web.middleware
+async def same_origin_only(request, handler):
+    """Block other websites open in the same browser from driving this local
+    server (saving creds, starting paid runs, reading /events). Browsers always
+    send Origin on cross-site POSTs and WebSocket upgrades."""
+    origin = request.headers.get("Origin")
+    hostname = request.host.rsplit(":", 1)[0]  # Host check also stops DNS rebinding
+    if hostname not in ("127.0.0.1", "localhost") or (origin and origin != f"http://{request.host}"):
+        return web.Response(status=403, text="forbidden origin")
+    return await handler(request)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
 
-    app = web.Application(client_max_size=64 * 1024 * 1024)
+    app = web.Application(client_max_size=64 * 1024 * 1024, middlewares=[same_origin_only])
     app["clients"] = set()
     app["media"] = set()
     app["state"] = {"running": False}

@@ -125,14 +125,14 @@ $('loadLists').onclick = async () => {
   const r = await (await fetch('/lists?board='+encodeURIComponent($('board').value))).json();
   if (r.err){ log('Lỗi: '+r.err); sel.innerHTML='<option value="">— chọn list —</option>'; return; }
   sel.innerHTML = '<option value="">— chọn list —</option>';
-  r.lists.forEach((l,i) => { const o=document.createElement('option'); o.value=i+1; o.textContent=l.name; sel.appendChild(o); });
+  r.lists.forEach(l => { const o=document.createElement('option'); o.value=l.id; o.textContent=l.name; sel.appendChild(o); });
   log('Đã nạp '+r.lists.length+' list.');
 };
 
 $('run').onclick = async () => {
   if (!$('list').value){ log('Chọn list trước.'); return; }
   $('run').disabled = true;
-  const body = { mode:$('mode').value, prompt:$('prompt').value, board:$('board').value, list_index:$('list').value };
+  const body = { mode:$('mode').value, prompt:$('prompt').value, board:$('board').value, list_id:$('list').value };
   const r = await (await fetch('/run',{method:'POST',body:JSON.stringify(body)})).json();
   if (r.err){ log('Lỗi: '+r.err); $('run').disabled=false; }
 };
