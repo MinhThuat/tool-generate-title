@@ -73,39 +73,45 @@ def _norm(s):
 
 
 def parse_board_id(raw):
-    """Accept a full board URL or a raw board ID; return the board ID."""
+    """Accept a board URL, card URL, board ID or board name. Pure string work;
+    card links and names are resolved over the network in get_lists()."""
     raw = raw.strip().strip('"\'')
     match = re.search(r'trello\.com/b/([^/?#\s]+)', raw)
+    return match.group(1) if match else raw
+
+
+def _trello_get(path, **params):
+    return requests.get(f"https://api.trello.com/1/{path}",
+                        params={'key': TRELLO_API_KEY, 'token': TRELLO_TOKEN, **params},
+                        timeout=REQUEST_TIMEOUT)
+
+
+def _resolve_board(board):
+    """Card link -> its board; otherwise a board name -> its ID. None if neither."""
+    match = re.search(r'trello\.com/c/([^/?#\s]+)', board)
     if match:
-        return match.group(1)
-    match = re.search(r'trello\.com/c/([^/?#\s]+)', raw)
-    if match:  # card link pasted: use that card's board
-        r = requests.get(f"https://api.trello.com/1/cards/{match.group(1)}",
-                         params={'key': TRELLO_API_KEY, 'token': TRELLO_TOKEN, 'fields': 'idBoard'},
-                         timeout=REQUEST_TIMEOUT)
-        if r.status_code == 200:
-            return r.json()['idBoard']
-    if not re.fullmatch(r'[A-Za-z0-9]{8}|[0-9a-f]{24}', raw):  # not an ID: treat as board name
-        r = requests.get("https://api.trello.com/1/members/me/boards",
-                         params={'key': TRELLO_API_KEY, 'token': TRELLO_TOKEN, 'fields': 'name'},
-                         timeout=REQUEST_TIMEOUT)
-        if r.status_code == 200:
-            for b in r.json():
-                if _norm(b['name']) == _norm(raw):
-                    return b['id']
-    return raw
+        r = _trello_get(f"cards/{match.group(1)}", fields='idBoard')
+        return r.json()['idBoard'] if r.status_code == 200 else None
+    r = _trello_get("members/me/boards", fields='name')
+    if r.status_code == 200:
+        for b in r.json():
+            if _norm(b['name']) == _norm(board):
+                return b['id']
+    return None
 
 
 def get_lists(board_id, io):
-    """Fetch all lists in a Trello board."""
-    url = f"https://api.trello.com/1/boards/{board_id}/lists"
-    params = {'key': TRELLO_API_KEY, 'token': TRELLO_TOKEN}
-    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    """Fetch all lists in a Trello board (board_id may also be a card link or board name)."""
+    response = _trello_get(f"boards/{urllib.parse.quote(board_id, safe='')}/lists")
+    if response.status_code in (400, 404):  # not an ID: try card link / board name
+        resolved = _resolve_board(board_id)
+        if resolved:
+            response = _trello_get(f"boards/{resolved}/lists")
     if response.status_code == 200:
         return response.json()
     io.log(f"Error: Failed to fetch lists from board '{board_id}'. Status {response.status_code}: {response.text[:200]}")
-    if response.status_code == 400:
-        io.log("  -> Board ID sai. Dán link board dạng https://trello.com/b/<ID>/..., link card, hoặc đúng tên board.")
+    if response.status_code in (400, 404):
+        io.log("  -> Không tìm thấy board. Dán link board https://trello.com/b/<ID>/..., link card, hoặc đúng tên board.")
     elif response.status_code == 401:
         io.log(f"  -> Trello rejected key/token. Delete '{CONFIG_PATH}' and re-run to re-enter.")
     return None
