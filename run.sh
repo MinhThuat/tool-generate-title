@@ -30,7 +30,7 @@ git_update() {
     else
         before="$("${G[@]}" rev-parse HEAD 2>/dev/null || true)"
         [ -z "$("${G[@]}" status --porcelain --untracked-files=no)" ] \
-            || { echo "Local edits in tracked files: skip auto-update."; return 0; }
+            || { echo "Local edits in tracked files: skip auto-update."; return 1; }
     fi
     "${G[@]}" fetch -q origin main || return 1
     if [ -n "$before" ]; then "${G[@]}" merge -q --ff-only origin/main || return 1
