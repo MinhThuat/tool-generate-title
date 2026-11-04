@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Web UI (Linux build): controls, log and downloaded images + results.
+"""Web UI: controls, log and downloaded images + results.
 No embedded Claude terminal — Python drives the Trello pipeline on its own.
 
   python web_studio.py            # opens http://127.0.0.1:8770
