@@ -94,9 +94,9 @@ def _resolve_board(board):
         return r.json()['idBoard'] if r.status_code == 200 else None
     r = _trello_get("members/me/boards", fields='name')
     if r.status_code == 200:
-        for b in r.json():
-            if _norm(b['name']) == _norm(board):
-                return b['id']
+        ids = [b['id'] for b in r.json() if _norm(b['name']) == _norm(board)]
+        if len(ids) == 1:  # duplicate names -> refuse, a wrong board gets its cards overwritten
+            return ids[0]
     return None
 
 
@@ -111,7 +111,7 @@ def get_lists(board_id, io):
         return response.json()
     io.log(f"Error: Failed to fetch lists from board '{board_id}'. Status {response.status_code}: {response.text[:200]}")
     if response.status_code in (400, 404):
-        io.log("  -> Không tìm thấy board. Dán link board https://trello.com/b/<ID>/..., link card, hoặc đúng tên board.")
+        io.log("  -> Không tìm thấy board (hoặc có 2 board trùng tên). Dán link board https://trello.com/b/<ID>/..., link card, hoặc đúng tên board.")
     elif response.status_code == 401:
         io.log(f"  -> Trello rejected key/token. Delete '{CONFIG_PATH}' and re-run to re-enter.")
     return None
