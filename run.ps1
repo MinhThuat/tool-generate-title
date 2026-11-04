@@ -6,42 +6,60 @@ $ProgressPreference = "SilentlyContinue"  # PS 5.1 progress bar makes downloads 
 $DIR = $PSScriptRoot
 Set-Location $DIR
 
-# 0) Auto-update from the private GitHub repo. Needs a read-only token in
-#    update_token.txt; any failure (offline, no/bad token) just runs this copy.
-$REPO = "MinhThuat/tool-generate-title"
-$tokFile = Join-Path $DIR "update_token.txt"
-if ((Test-Path $tokFile) -and -not $env:KWGEN_UPDATED) {
+# 0) Auto-update via git from the public repo. Uses system git, else a portable
+#    MinGit unzipped into .git-portable (no admin). Fast-forward only, and skipped
+#    when tracked files have local edits, so a dev checkout is never clobbered.
+#    Any failure (offline, etc.) just runs this copy.
+$REPO_URL = "https://github.com/MinhThuat/tool-generate-title.git"
+
+function Get-Git {
+    $g = Get-Command git -ErrorAction SilentlyContinue
+    if ($g) { return $g.Source }
+    $mg = Join-Path $DIR ".git-portable\cmd\git.exe"
+    if (-not (Test-Path $mg)) {
+        Write-Host "Downloading portable Git (MinGit, no admin needed)..."
+        # ponytail: pinned build; if the download 404s, bump $GV to a newer release.
+        $GV = "2.51.2"
+        $zip = Join-Path $env:TEMP "mingit.zip"
+        Invoke-WebRequest -UseBasicParsing -OutFile $zip `
+            -Uri "https://github.com/git-for-windows/git/releases/download/v$GV.windows.1/MinGit-$GV-64-bit.zip"
+        Expand-Archive -Force $zip (Join-Path $DIR ".git-portable")
+        Remove-Item $zip -ErrorAction SilentlyContinue
+    }
+    return $mg
+}
+
+if (-not $env:KWGEN_UPDATED) {
     try {
-        $tok = (Get-Content $tokFile -Raw).Trim()
-        $auth = @{ Authorization = "Bearer $tok" }
-        $sha = (Invoke-RestMethod -UseBasicParsing -Headers $auth "https://api.github.com/repos/$REPO/commits/main").sha
-        $verFile = Join-Path $DIR ".version"
-        $cur = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { "" }
-        if ($sha -match '^[0-9a-f]{40}$' -and $sha -ne $cur) {
-            Write-Host "Updating to $($sha.Substring(0,7))..."
-            $tmp = Join-Path $env:TEMP "kwgen_update"
-            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-            Invoke-WebRequest -UseBasicParsing -Headers $auth "https://api.github.com/repos/$REPO/tarball/$sha" -OutFile "$tmp\src.tgz"
-            tar -xzf "$tmp\src.tgz" -C $tmp
-            if ($LASTEXITCODE -ne 0) { throw "tar failed" }
-            $src = Get-ChildItem $tmp -Directory | Select-Object -First 1
-            if (-not $src) { throw "empty archive" }
-            $req = Join-Path $DIR "requirements.txt"
-            $oldReq = if (Test-Path $req) { (Get-FileHash $req).Hash } else { "" }
-            Copy-Item -Path (Join-Path $src.FullName "*") -Destination $DIR -Recurse -Force
+        $git = Get-Git
+        function G { & $git -c "safe.directory=*" -C $DIR @args; if ($LASTEXITCODE) { throw "git $args failed" } }
+        $req = Join-Path $DIR "requirements.txt"
+        $oldReq = if (Test-Path $req) { (Get-FileHash $req).Hash } else { "" }
+        $before = ""
+        if (-not (Test-Path (Join-Path $DIR ".git"))) {
+            G init -q
+            G remote add origin $REPO_URL
+        } else {
+            $before = (& $git -c "safe.directory=*" -C $DIR rev-parse -q --verify HEAD)
+            $dirty = (& $git -c "safe.directory=*" -C $DIR status --porcelain --untracked-files=no)
+            if ($dirty) { throw "local edits in tracked files" }
+        }
+        G fetch -q origin main
+        if ($before) { G merge -q --ff-only origin/main }
+        else { G checkout -q -f -B main origin/main }  # first run: adopt the unzipped folder
+        $after = (& $git -c "safe.directory=*" -C $DIR rev-parse HEAD)
+        if ($after -ne $before) {
+            Write-Host "Updated to $($after.Substring(0,7))."
             if ((Get-FileHash $req).Hash -ne $oldReq) {
                 Remove-Item -Force (Join-Path $DIR ".venv\.deps_ok") -ErrorAction SilentlyContinue
             }
-            Set-Content -Path $verFile -Value $sha
-            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
             # Re-run the (possibly new) launcher once.
             $env:KWGEN_UPDATED = "1"
             & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $DIR "run.ps1")
             exit $LASTEXITCODE
         }
     } catch {
-        Write-Host "Update check skipped: $($_.Exception.Message)"
+        Write-Host "Update skipped: $($_.Exception.Message)"
     }
 }
 

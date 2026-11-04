@@ -1,8 +1,33 @@
+# Python runtime / venv (per machine, rebuilt by run.bat / run.sh)
 .venv/
+venv/
 .python/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Portable Git downloaded by run.ps1
+.git-portable/
+
+# Per-machine data and secrets
 config.json
 output.json
 .env
-update_token.txt
 .version
+*.log
+
+# Build output (PyInstaller)
+build/
+dist/
+*.spec
+
+# Packaged copies
+*.zip
+*.tar.gz
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

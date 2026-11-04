@@ -18,33 +18,54 @@ if [ -z "${IN_TERMINAL:-}" ] && [ ! -t 0 ]; then
     # No terminal emulator found: fall through and run inline.
 fi
 
-# 0) Auto-update from the private GitHub repo. Needs a read-only token in
-#    update_token.txt; any failure (offline, no/bad token) just runs this copy.
+# 0) Auto-update from the public repo. With git: fast-forward only, skipped when
+#    tracked files have local edits (a dev checkout is never clobbered). Without
+#    git (needs root to install on Linux): fall back to downloading the tarball.
+#    Any failure (offline, etc.) just runs this copy.
 REPO=MinhThuat/tool-generate-title
-self_update() {
-    local tok sha cur tmp src old_req
-    tok="$(tr -d '[:space:]' < "$DIR/update_token.txt")"
-    sha="$(curl -fsS -H "Authorization: Bearer $tok" -H "Accept: application/vnd.github.sha" \
+git_update() {
+    local G=(git -c safe.directory='*' -C "$DIR") before=""
+    if [ ! -d "$DIR/.git" ]; then
+        "${G[@]}" init -q && "${G[@]}" remote add origin "https://github.com/$REPO.git" || return 1
+    else
+        before="$("${G[@]}" rev-parse HEAD 2>/dev/null || true)"
+        [ -z "$("${G[@]}" status --porcelain --untracked-files=no)" ] \
+            || { echo "Local edits in tracked files: skip auto-update."; return 0; }
+    fi
+    "${G[@]}" fetch -q origin main || return 1
+    if [ -n "$before" ]; then "${G[@]}" merge -q --ff-only origin/main || return 1
+    else "${G[@]}" checkout -q -f -B main origin/main || return 1; fi  # first run: adopt folder
+    NEW_SHA="$("${G[@]}" rev-parse HEAD)"
+    [ "$NEW_SHA" != "$before" ]
+}
+tarball_update() {
+    local sha tmp src
+    sha="$(curl -fsS -H "Accept: application/vnd.github.sha" \
         "https://api.github.com/repos/$REPO/commits/main")" || return 1
     [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
-    cur="$(cat "$DIR/.version" 2>/dev/null || true)"
-    [ "$sha" = "$cur" ] && return 0
-    echo "Updating to ${sha:0:7}..."
+    [ "$sha" = "$(cat "$DIR/.version" 2>/dev/null || true)" ] && return 1
     tmp="$(mktemp -d)"
-    curl -fsSL -H "Authorization: Bearer $tok" "https://api.github.com/repos/$REPO/tarball/$sha" \
-        | tar -xz -C "$tmp" || return 1
+    curl -fsSL "https://api.github.com/repos/$REPO/tarball/$sha" | tar -xz -C "$tmp" || return 1
     src="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1)"
     [ -n "$src" ] || return 1
-    old_req="$(cksum < "$DIR/requirements.txt" 2>/dev/null || true)"
     cp -a "$src/." "$DIR/"
-    [ "$old_req" = "$(cksum < "$DIR/requirements.txt")" ] || rm -f "$DIR/.venv/.deps_ok"
     echo "$sha" > "$DIR/.version"
     rm -rf "$tmp"
-    # exec from inside the function: bash never reads the overwritten file further.
-    KWGEN_UPDATED=1 exec bash "$DIR/run.sh"
+    NEW_SHA="$sha"
 }
-if [ -f "$DIR/update_token.txt" ] && [ -z "${KWGEN_UPDATED:-}" ] && command -v curl >/dev/null 2>&1; then
-    self_update || echo "Update check skipped."
+self_update() {
+    # Returns 0 only when new code landed.
+    local old_req
+    old_req="$(cksum < "$DIR/requirements.txt" 2>/dev/null || true)"
+    if command -v git >/dev/null 2>&1; then git_update || return 1
+    elif command -v curl >/dev/null 2>&1; then tarball_update || return 1
+    else return 1; fi
+    echo "Updated to ${NEW_SHA:0:7}."
+    [ "$old_req" = "$(cksum < "$DIR/requirements.txt")" ] || rm -f "$DIR/.venv/.deps_ok"
+}
+if [ -z "${KWGEN_UPDATED:-}" ] && self_update; then
+    # Re-run the (possibly new) launcher once; bash reads no further from this file.
+    KWGEN_UPDATED=1 exec bash "$DIR/run.sh"
 fi
 
 download_standalone() {
