@@ -64,7 +64,8 @@
         <select id="mode"><option value="1">Chỉ cover</option><option value="2">Toàn bộ (ghép)</option></select>
       </label>
       <label>Prompt <textarea id="prompt" rows="1" placeholder="Tùy chọn: yêu cầu thêm (để trống = mặc định theo ảnh)"></textarea></label>
-      <label>Board <input id="board" placeholder="ID hoặc link Trello"></label>
+      <label>Board <input id="board" placeholder="Tên, ID hoặc link Trello"></label>
+      <label title="Bỏ tích = chỉ dùng lần này, không nhớ"><input type="checkbox" id="keepBoard"> Lưu board</label>
       <button id="loadLists">Nạp lists</button>
       <select id="list"><option value="">— chọn list —</option></select>
       <button id="run" disabled>▶ Chạy</button>
@@ -120,6 +121,15 @@ $('saveCreds').onclick = async () => {
   else log('Creds chưa đủ.');
 };
 
+// ---------- remembered board (per browser; unticked = this run only) ----------
+const BOARD_KEY = 'kwgen.board';
+try { const b = localStorage.getItem(BOARD_KEY); if (b){ $('board').value = b; $('keepBoard').checked = true; } } catch(e){}
+function rememberBoard(){
+  try { $('keepBoard').checked ? localStorage.setItem(BOARD_KEY, $('board').value.trim())
+                               : localStorage.removeItem(BOARD_KEY); } catch(e){}
+}
+$('keepBoard').onchange = rememberBoard;
+
 $('loadLists').onclick = async () => {
   const sel = $('list'); sel.innerHTML = '<option value="">— đang nạp… —</option>';
   const r = await (await fetch('/lists?board='+encodeURIComponent($('board').value))).json();
@@ -127,6 +137,7 @@ $('loadLists').onclick = async () => {
   sel.innerHTML = '<option value="">— chọn list —</option>';
   r.lists.forEach(l => { const o=document.createElement('option'); o.value=l.id; o.textContent=l.name; sel.appendChild(o); });
   log('Đã nạp '+r.lists.length+' list.');
+  rememberBoard();
 };
 
 $('run').onclick = async () => {
