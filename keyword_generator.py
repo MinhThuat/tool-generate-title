@@ -425,9 +425,11 @@ def update_card(card_id, sku, new_title, tags_list, io):
     return True
 
 
-def run_pipeline(io):
-    """Full flow, driven through io. Returns process exit code."""
-    check_claude_connection(io)
+def run_pipeline(io, ping=True):
+    """Full flow, driven through io. Returns process exit code.
+    ping=False skips the ~10s claude health check (the web UI already did it)."""
+    if ping:
+        check_claude_connection(io)
     configure_credentials(io)
     if not (TRELLO_API_KEY and TRELLO_TOKEN):
         io.log("Error: Missing Trello credentials.")
@@ -448,6 +450,9 @@ def run_pipeline(io):
     list_id = select_list(lists, io)
     if not list_id:
         return 1
+    if is_stopped(io):
+        io.log("Đã dừng.")
+        return 0
 
     cards = get_cards_in_list(list_id, io)
     if not cards:

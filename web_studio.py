@@ -178,10 +178,11 @@ async def run(request):
     io = WebIO(request.app, loop, answers)
     request.app["state"]["running"] = True
     request.app["state"]["io"] = io
+    io.log("Bắt đầu chạy…")
 
     def worker():
         try:
-            if kg.run_pipeline(io) == 0:
+            if kg.run_pipeline(io, ping=False) == 0:
                 _mark_ran(list_id)  # also on Stop: some cards were already updated
         except Exception as e:
             io.log(f"Fatal: {e}")

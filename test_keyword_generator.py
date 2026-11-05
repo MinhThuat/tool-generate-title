@@ -113,3 +113,15 @@ def test_stop_halts_before_next_card(monkeypatch):
     assert kg.run_pipeline(io) == 0
     assert seen == ["c1"]
     assert any("Đã dừng" in l for l in io.logs)
+
+
+def test_stop_before_cards_skips_fetch(monkeypatch):
+    import threading
+    io = FakeIO(["1", "", "board", "1"])
+    io.stop = threading.Event()
+    io.stop.set()
+    monkeypatch.setattr(kg, "TRELLO_API_KEY", "k")
+    monkeypatch.setattr(kg, "TRELLO_TOKEN", "t")
+    monkeypatch.setattr(kg, "get_lists", lambda b, io: [{"id": "L1", "name": "x"}])
+    monkeypatch.setattr(kg, "get_cards_in_list", lambda l, io: (_ for _ in ()).throw(AssertionError("fetched")))
+    assert kg.run_pipeline(io, ping=False) == 0
