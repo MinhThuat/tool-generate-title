@@ -317,14 +317,28 @@ def generate_keywords_and_tags(image_path, io, extra=""):
     # ponytail: every call pays for Claude Code's large system prompt (~$0.3 the
     # first card, cheaper after via 5-min prompt cache). If cost matters at scale,
     # switch to the Anthropic API with a key instead of the CLI.
+    if is_stopped(io):  # Stop pressed while the image was being built
+        return None, None
+    proc = subprocess.Popen(
+        cmd, cwd=os.path.dirname(image_path),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
+    io.proc = proc  # lets a Stop button kill it mid-card
     try:
-        proc = subprocess.run(
-            cmd, cwd=os.path.dirname(image_path),
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=CLAUDE_TIMEOUT,
-        )
+        if is_stopped(io):  # Stop landed before io.proc was visible to it
+            kill_proc(proc)
+        stdout, stderr = proc.communicate(timeout=CLAUDE_TIMEOUT)
     except subprocess.TimeoutExpired:
+        kill_proc(proc)
+        proc.communicate()
         io.log(f"Error: claude timed out after {CLAUDE_TIMEOUT}s. Skipping.")
         return None, None
+    finally:
+        io.proc = None
+    if is_stopped(io):
+        return None, None
+    proc.stdout, proc.stderr = stdout, stderr
     if proc.returncode != 0:
         # claude's real error usually lands on stdout (often as JSON), not stderr.
         detail = (proc.stderr.strip() or proc.stdout.strip() or "(no output)")[:500]
@@ -338,6 +352,23 @@ def generate_keywords_and_tags(image_path, io, extra=""):
         io.log(f"Error: unexpected claude output: {proc.stdout[:300]}")
         return None, None
     return parse_title_tags(text, io)
+
+
+def kill_proc(proc):
+    """Kill proc and its children (claude may be a .cmd shim on Windows)."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True)
+    else:
+        proc.kill()
+
+
+def is_stopped(io):
+    """io may carry a threading.Event `stop` (web UI); console io has none."""
+    stop = getattr(io, "stop", None)
+    return bool(stop and stop.is_set())
 
 
 def parse_title_tags(text, io):
@@ -426,6 +457,9 @@ def run_pipeline(io):
     results = []
     tmpdir = tempfile.mkdtemp(prefix="kwgen_")
     for n, card in enumerate(cards, 1):
+        if is_stopped(io):
+            io.log(f"\nĐã dừng: xử lý {len(results)}/{len(cards)} card.")
+            break
         io.log(f"\n[{n}/{len(cards)}] Processing '{card['name']}' ({card['id']})")
         sku = extract_sku_from_title(card['name'], io)
         urls = get_image_urls_from_card(card, mode)
@@ -440,7 +474,7 @@ def run_pipeline(io):
                     title, tags = generate_keywords_and_tags(image_path, io, extra)
                     if title and tags:
                         ok = update_card(card['id'], sku, title, tags, io)
-                    else:
+                    elif not is_stopped(io):
                         io.log(f"Error: Skipping card '{card['id']}' (invalid Claude output).")
         except requests.RequestException as e:  # one card's network error must not kill the batch
             io.log(f"Error: network error on card '{card['id']}': {e}")

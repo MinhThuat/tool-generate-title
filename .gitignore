@@ -12,6 +12,7 @@ __pycache__/
 # Per-machine data and secrets
 config.json
 output.json
+ran_lists.json
 .env
 .version
 *.log

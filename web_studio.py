@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import urllib.parse
 import webbrowser
 
@@ -30,6 +31,8 @@ class WebIO:
         self.app = app
         self.loop = loop
         self.answers = list(answers)
+        self.stop = threading.Event()
+        self.proc = None  # claude subprocess currently running, if any
 
     def _emit(self, evt):
         asyncio.run_coroutine_threadsafe(broadcast(self.app, evt), self.loop)
@@ -134,6 +137,28 @@ async def lists(request):
     return web.json_response({"lists": [{"id": l["id"], "name": l["name"]} for l in data]})
 
 
+RAN_PATH = os.path.join(kg.base_dir(), "ran_lists.json")
+
+
+def _load_ran():
+    """{list_id: "YYYY-MM-DD HH:MM"} of lists already run."""
+    try:
+        with open(RAN_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _mark_ran(list_id):
+    ran = _load_ran()
+    ran[list_id] = time.strftime("%Y-%m-%d %H:%M")
+    try:
+        with open(RAN_PATH, "w", encoding="utf-8") as f:
+            json.dump(ran, f, indent=2)
+    except OSError:
+        pass
+
+
 async def run(request):
     d = await request.json()
     # No await between check and claim, so two clicks can't both start a run.
@@ -142,16 +167,22 @@ async def run(request):
     _load_saved_creds()
     if not (kg.TRELLO_API_KEY and kg.TRELLO_TOKEN):
         return web.json_response({"err": "Chưa có Trello key/token."}, status=400)
+    list_id = str(d.get("list_id", ""))
+    ran_at = _load_ran().get(list_id)
+    if ran_at and not d.get("force"):
+        return web.json_response({"confirm": True, "ran_at": ran_at})
     # run_pipeline asks in this order: mode, optional prompt, board, list (id).
     answers = [d.get("mode", "1"), d.get("prompt", ""),
-               d.get("board", ""), str(d.get("list_id", ""))]
+               d.get("board", ""), list_id]
     loop = asyncio.get_event_loop()
     io = WebIO(request.app, loop, answers)
     request.app["state"]["running"] = True
+    request.app["state"]["io"] = io
 
     def worker():
         try:
-            kg.run_pipeline(io)
+            if kg.run_pipeline(io) == 0:
+                _mark_ran(list_id)  # also on Stop: some cards were already updated
         except Exception as e:
             io.log(f"Fatal: {e}")
         finally:
@@ -160,6 +191,18 @@ async def run(request):
 
     threading.Thread(target=worker, daemon=True).start()
     return web.json_response({"started": True})
+
+
+async def stop(request):
+    io = request.app["state"].get("io")
+    if not request.app["state"]["running"] or not io:
+        return web.json_response({"err": "Không có gì đang chạy."}, status=409)
+    io.stop.set()
+    proc = io.proc
+    if proc:
+        kg.kill_proc(proc)
+    io.log("Đang dừng…")
+    return web.json_response({"stopping": True})
 
 
 class _CollectIO:
@@ -210,6 +253,7 @@ def main():
         web.post("/creds", save_creds),
         web.get("/lists", lists),
         web.post("/run", run),
+        web.post("/stop", stop),
     ])
     url = f"http://127.0.0.1:{a.port}"
     print(f"Studio: {url}")

@@ -32,6 +32,7 @@
   button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
   button:disabled { opacity:.5; cursor:default; }
   #run { background:#1b3a2a; border-color:var(--ok); color:#bff0d4; }
+  #stop { background:#3a1b1b; border-color:var(--bad); color:#f0c4bf; }
   .creds.hide { display:none; }
   #log { height:160px; overflow-y:auto; padding:6px 12px; font:12px/1.5 ui-monospace,Consolas,monospace;
     color:var(--mut); background:#0c0e12; border-bottom:1px solid var(--line); white-space:pre-wrap; }
@@ -69,6 +70,7 @@
       <button id="loadLists">Nạp lists</button>
       <select id="list"><option value="">— chọn list —</option></select>
       <button id="run" disabled>▶ Chạy</button>
+      <button id="stop" disabled>■ Dừng</button>
     </div>
     <div id="log"></div>
     <div id="gallery"><div id="empty">Kết quả từng card sẽ hiện ở đây khi chạy.</div></div>
@@ -98,7 +100,7 @@ ev.onmessage = e => {
     c.classList.toggle('bad', !m.ok);
     c.querySelector('.title').textContent = m.ok ? ((m.sku?m.sku+' ':'')+m.title) : ((m.sku||'')+' — bỏ qua');
     c.querySelector('.tags').textContent = m.ok ? (m.tags||[]).join(', ') : ''; }
-  else if (m.t==='done'){ $('run').disabled=false; log('— Xong —'); }
+  else if (m.t==='done'){ $('run').disabled=false; $('stop').disabled=true; log('— Xong —'); }
 };
 
 // ---------- status ----------
@@ -144,8 +146,23 @@ $('run').onclick = async () => {
   if (!$('list').value){ log('Chọn list trước.'); return; }
   $('run').disabled = true;
   const body = { mode:$('mode').value, prompt:$('prompt').value, board:$('board').value, list_id:$('list').value };
-  const r = await (await fetch('/run',{method:'POST',body:JSON.stringify(body)})).json();
-  if (r.err){ log('Lỗi: '+r.err); $('run').disabled=false; }
+  const post = () => fetch('/run',{method:'POST',body:JSON.stringify(body)}).then(x => x.json());
+  let r = await post();
+  if (r.confirm){
+    const name = $('list').selectedOptions[0].textContent;
+    if (!confirm('List "'+name+'" đã chạy lúc '+r.ran_at+'.\nChạy lại sẽ ghi đè title/tags các card. Chạy lại?')){
+      $('run').disabled = false; return;
+    }
+    body.force = true; r = await post();
+  }
+  if (r.err){ log('Lỗi: '+r.err); $('run').disabled=false; return; }
+  $('stop').disabled = false;
+};
+
+$('stop').onclick = async () => {
+  $('stop').disabled = true;
+  const r = await (await fetch('/stop',{method:'POST'})).json();
+  if (r.err) log('Lỗi: '+r.err);
 };
 </script>
 </body>
