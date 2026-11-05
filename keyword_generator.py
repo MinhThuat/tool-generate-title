@@ -273,7 +273,7 @@ def check_claude_connection(io):
 SEO_PROMPT = """Look only at the product in the photo(s) and write an Etsy listing title and tags for it.
 
 Title rules:
-- English, max 140 characters, no ALL CAPS, no emojis, no SKU.
+- English, 120-135 characters (hard limit 140, count them), no ALL CAPS, no emojis, no SKU.
 - Start with the most-searched phrase a buyer would type for this exact item.
 - Then add concrete details you can SEE: material, color, style, shape, use/room, and who it is for or the occasion if obvious.
 - Separate phrases with commas or " | ". Do not repeat the same word more than twice.
@@ -387,7 +387,15 @@ def parse_title_tags(text, io):
     if not title or not tags:
         io.log(f"Error: Claude JSON missing/empty title or tags: {text[:300]}")
         return None, None
-    return title, tags
+    return fit_title(title), tags
+
+
+def fit_title(title, limit=140):
+    """Claude can't count chars: drop trailing phrases until it fits Etsy's limit."""
+    title = title.strip()
+    while len(title) > limit and ("," in title or "|" in title):
+        title = title[:max(title.rfind(","), title.rfind("|"))].rstrip(" ,|")
+    return title[:limit].rstrip()
 
 
 def check_output(title, tags, io):
