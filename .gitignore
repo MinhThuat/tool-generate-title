@@ -32,3 +32,7 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# Per-machine style guide (build_knowledge.py) + backup
+knowledge.md
+knowledge.md.bak

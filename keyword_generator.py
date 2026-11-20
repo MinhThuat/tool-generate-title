@@ -286,8 +286,29 @@ Tags rules:
 - Cover: item type, material, style, color, room/use, gift/occasion, and long-tail variants."""
 
 
-def build_prompt(image_name, extra=""):
-    """Built-in SEO rules, plus the seller's optional extra instructions."""
+KNOWLEDGE_PATH = os.path.join(base_dir(), "knowledge.md")
+
+
+def load_knowledge(path=KNOWLEDGE_PATH):
+    """Shop style guide made by build_knowledge.py (+ seller's own rules). '' if none."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def build_prompt(image_name, extra="", knowledge=None):
+    """Built-in SEO rules, the shop style guide (knowledge.md), then the
+    seller's optional extra instructions. Later parts win on conflict."""
+    knowledge = load_knowledge() if knowledge is None else knowledge.strip()
+    # ponytail: inlined into argv; Windows caps a command line at ~32K chars,
+    # so keep knowledge.md short (build_knowledge asks for < 6000 chars).
+    knowledge_part = (
+        "\n\nShop style guide (learned from this shop's existing listings, plus "
+        "the seller's own rules; match this style, and follow it if it conflicts "
+        f"with the rules above):\n{knowledge}" if knowledge else ""
+    )
     extra = extra.strip()
     extra_part = (
         "\n\nAdditional instructions from the seller (follow these if they "
@@ -296,7 +317,7 @@ def build_prompt(image_name, extra=""):
     return (
         f"Read the image file {image_name} in the current directory. You are "
         f"an Etsy SEO assistant; the user owns this product photo.\n\n"
-        f"{SEO_PROMPT}{extra_part}\n\nReturn ONLY a JSON object, no prose, with "
+        f"{SEO_PROMPT}{knowledge_part}{extra_part}\n\nReturn ONLY a JSON object, no prose, with "
         'exactly two keys: "title" (a string) and "tags" (an array of 13 short string tags).'
     )
 

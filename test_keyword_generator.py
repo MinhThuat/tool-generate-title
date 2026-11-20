@@ -125,3 +125,22 @@ def test_stop_before_cards_skips_fetch(monkeypatch):
     monkeypatch.setattr(kg, "get_lists", lambda b, io: [{"id": "L1", "name": "x"}])
     monkeypatch.setattr(kg, "get_cards_in_list", lambda l, io: (_ for _ in ()).throw(AssertionError("fetched")))
     assert kg.run_pipeline(io, ping=False) == 0
+
+
+def test_knowledge_rebuild_keeps_user_rules_and_reaches_prompt():
+    import build_knowledge as bk
+    old = bk.compose("## Old guide", "", "b", 3) + "- Never use the word cheap\n"
+    new = bk.compose("## New guide", old, "b", 5)
+    assert "New guide" in new and "Old guide" not in new        # auto part replaced
+    assert "Never use the word cheap" in new                      # user rules kept
+    assert bk.USER_MARK in bk.compose("## G", "", "b", 1)         # template on first run
+    p = kg.build_prompt("a.jpg", knowledge=new)
+    assert "Never use the word cheap" in p and "Shop style guide" in p
+    assert "Shop style guide" not in kg.build_prompt("a.jpg", knowledge="")
+
+
+def test_format_data_groups_by_list_tagged_first():
+    import build_knowledge as bk
+    out = bk.format_data([("A", "[1] no tags", ""), ("B", "[2] mug", "mug, cup")])
+    assert out.index("### List: B") < out.index("### List: A")
+    assert "[2] mug || mug, cup" in out
